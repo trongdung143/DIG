@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, font
 from PIL import Image, ImageTk
 import os
 import tempfile
@@ -29,12 +29,16 @@ class CameraApp:
         self.button_neutral = "#607D8B"
 
         self.is_camera_on = False
+        self.is_collecting = False
         self.cap = None
         self.camera_label = None
         self.init_message = None
         self.message_frame = None
         self.selected_image = None
         self.drop_info_label = None
+        self.username = ""
+        self.face_count = 0
+        self.scanning = False
 
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -117,20 +121,20 @@ class CameraApp:
         )
         self.select_image_btn.pack(side=tk.LEFT, padx=10)
 
-        self.camera_btn = tk.Button(
-            button_frame,
-            text="Bật Camera",
-            command=self.toggle_camera,
-            bg=self.accent_color,
-            fg=self.text_color,
-            font=("Arial", 12, "bold"),
-            width=12,
-            height=2,
-            relief=tk.FLAT,
-        )
-        self.camera_btn.pack(side=tk.LEFT, padx=10)
+        # self.camera_btn = tk.Button(
+        #     button_frame,
+        #     text="Bật Camera",
+        #     command=self.toggle_camera,
+        #     bg=self.accent_color,
+        #     fg=self.text_color,
+        #     font=("Arial", 12, "bold"),
+        #     width=12,
+        #     height=2,
+        #     relief=tk.FLAT,
+        # )
+        # self.camera_btn.pack(side=tk.LEFT, padx=10)
 
-        self.camera_btn = tk.Button(
+        self.face_btn = tk.Button(
             button_frame,
             text="Thêm khuôn mặt",
             command=self.save_face,
@@ -141,7 +145,7 @@ class CameraApp:
             height=2,
             relief=tk.FLAT,
         )
-        self.camera_btn.pack(side=tk.LEFT, padx=10)
+        self.face_btn.pack(side=tk.LEFT, padx=10)
 
     def create_main_content(self):
         self.content_frame = tk.Frame(self.root, bg=self.bg_color)
@@ -203,6 +207,9 @@ class CameraApp:
             pass
 
     def show_drop_info(self, event):
+        if hasattr(self, "is_collecting") and self.is_collecting:
+            return
+        
         if not self.is_camera_on and self.selected_image is None:
             if self.drop_info_label is None:
                 self.drop_info_label = tk.Label(
@@ -222,6 +229,10 @@ class CameraApp:
             self.drop_info_label = None
 
     def handle_drop(self, event):
+        if hasattr(self, "is_collecting") and self.is_collecting:
+            self.status_label.config(text="Không thể thả ảnh trong chế độ thu thập khuôn mặt")
+            return
+        
         if self.is_camera_on:
             self.toggle_camera()
 
@@ -358,8 +369,221 @@ class CameraApp:
             self.status_label.config(text="Camera đang chạy")
 
     def save_face(self):
-        save = FaceRecognitionPipeline()
-        save.run()
+        name_dialog = tk.Toplevel(self.root)
+        name_dialog.title("Nhập tên người dùng")
+        name_dialog.geometry("400x150")
+        name_dialog.transient(self.root)
+        name_dialog.grab_set()
+        name_dialog.resizable(False, False)
+        
+        name_dialog.update_idletasks()
+        width = name_dialog.winfo_width()
+        height = name_dialog.winfo_height()
+        x = (name_dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (name_dialog.winfo_screenheight() // 2) - (height // 2)
+        name_dialog.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+        
+        label_font = ("Arial", 12)
+        
+        tk.Label(
+            name_dialog, 
+            text="Nhập tên người dùng cần thu thập:", 
+            font=label_font
+        ).pack(pady=(20, 10))
+        
+        name_var = tk.StringVar()
+        name_entry = tk.Entry(name_dialog, textvariable=name_var, font=label_font, width=30)
+        name_entry.pack(pady=5)
+        name_entry.focus_set()
+        
+        self.name_confirmed = False
+        
+        def confirm_name():
+            if name_var.get().strip():
+                self.username = name_var.get().strip()
+                self.name_confirmed = True
+                name_dialog.destroy()
+                self.start_face_collection()
+            else:
+                messagebox.showwarning("Cảnh báo", "Vui lòng nhập tên người dùng!")
+        
+        tk.Button(
+            name_dialog, 
+            text="Xác nhận", 
+            command=confirm_name,
+            bg=self.button_positive, 
+            fg=self.text_color,
+            font=("Arial", 11),
+            width=10
+        ).pack(pady=15)
+        
+        def on_close():
+            self.name_confirmed = False
+            name_dialog.destroy()
+        
+        name_dialog.protocol("WM_DELETE_WINDOW", on_close)
+        
+        self.root.wait_window(name_dialog)
+
+    def start_face_collection(self):
+        if self.is_camera_on:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self.camera_label.config(image="")
+        
+        self.is_collecting = True
+        self.face_count = 0
+        self.max_faces = 300
+        self.scanning = False
+        
+        base_dir = "./data/face_data"
+        self.save_dir = os.path.join(base_dir, self.username)
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        if hasattr(self, "message_frame") and self.message_frame is not None:
+            self.message_frame.destroy()
+            self.message_frame = None
+        
+        if self.drop_info_label is not None:
+            self.drop_info_label.destroy()
+            self.drop_info_label = None
+        
+        self.select_image_btn.config(state=tk.DISABLED)
+        self.face_btn.config(state=tk.DISABLED)
+        
+        self.cancel_collect_btn = tk.Button(
+            self.camera_container,
+            text="Dừng thu thập",
+            command=self.cancel_collection,
+            bg=self.accent_color,
+            fg=self.text_color,
+            font=("Arial", 12, "bold"),
+            relief=tk.FLAT,
+        )
+        self.cancel_collect_btn.place(relx=0.5, rely=0.95, anchor=tk.CENTER)
+        
+        self.status_label.config(text=f"Đang thu thập khuôn mặt cho: {self.username}")
+        
+        self.cap = cv2.VideoCapture(0)
+        self.collect_faces()
+        
+    def collect_faces(self):
+        if not self.is_collecting:
+            return
+        
+        ret, frame = self.cap.read()
+        if ret:
+            # Điều chỉnh kích thước frame theo container
+            window_width = self.camera_container.winfo_width()
+            window_height = self.camera_container.winfo_height()
+            
+            if window_width > 1 and window_height > 1:
+                height, width = frame.shape[:2]
+                aspect_ratio = width / height
+                
+                if window_width / window_height > aspect_ratio:
+                    new_width = int(window_height * aspect_ratio)
+                    new_height = window_height
+                else:
+                    new_width = window_width
+                    new_height = int(new_width / aspect_ratio)
+                    
+                frame = cv2.resize(frame, (new_width, new_height))
+            
+            # Phát hiện khuôn mặt
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+            )
+            
+            annotated = frame.copy()
+            
+            if self.scanning and len(faces) > 1:
+                self.status_label.config(text="Quá nhiều khuôn mặt! Vui lòng chỉ hiển thị một khuôn mặt")
+            
+            if not self.scanning and len(faces) == 1:
+                self.scanning = True
+                self.status_label.config(text=f"Bắt đầu quét cho: {self.username}")
+            
+            for x, y, w, h in faces:
+                if len(faces) == 1:
+                    face_crop = frame[y:y+h, x:x+w]
+                    filename = os.path.join(self.save_dir, f"face_{self.face_count + 1}.jpg")
+                    cv2.imwrite(filename, face_crop)
+                    self.face_count += 1
+                    
+                cv2.rectangle(annotated, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            
+            cv_font = cv2.FONT_HERSHEY_SIMPLEX
+            
+            cv2.putText(
+                annotated,
+                f"Da thu thap: {self.face_count}/{self.max_faces}",
+                (10, 30),
+                cv_font,
+                0.8,
+                (0, 255, 0),
+                2
+            )
+            
+            self.status_label.config(text=f"Đã thu thập: {self.face_count}/{self.max_faces} cho {self.username}")
+            
+            annotated = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(annotated)
+            img_tk = ImageTk.PhotoImage(image=img)
+            
+            self.camera_label.config(image=img_tk)
+            self.camera_label.image = img_tk
+            
+            if self.face_count >= self.max_faces:
+                self.status_label.config(text=f"Đã thu thập đủ {self.max_faces} ảnh. Hoàn tất!")
+                self.finish_collection()
+                return
+        
+        self.root.after(10, self.collect_faces)
+
+    def cancel_collection(self):
+        self.is_collecting = False
+        
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        
+        if hasattr(self, "cancel_collect_btn") and self.cancel_collect_btn is not None:
+            self.cancel_collect_btn.destroy()
+            self.cancel_collect_btn = None
+        
+        self.select_image_btn.config(state=tk.NORMAL)
+        self.face_btn.config(state=tk.NORMAL)
+        
+        self.camera_label.config(image="")
+        self.root.after(100, self.show_init_message)
+        self.status_label.config(text="Đã dừng thu thập khuôn mặt")
+
+    def finish_collection(self):
+        self.is_collecting = False
+        
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        
+        if hasattr(self, "cancel_collect_btn") and self.cancel_collect_btn is not None:
+            self.cancel_collect_btn.destroy()
+            self.cancel_collect_btn = None
+        
+        self.select_image_btn.config(state=tk.NORMAL)
+        self.face_btn.config(state=tk.NORMAL)
+        
+        messagebox.showinfo(
+            "Hoàn tất",
+            f"Đã thu thập thành công {self.face_count} ảnh cho {self.username}.\n"
+            "Dữ liệu đã được lưu vào thư mục dữ liệu."
+        )
+
+        self.camera_label.config(image="")
+        self.root.after(100, self.show_init_message)
+        self.status_label.config(text=f"Thu thập khuôn mặt hoàn tất cho {self.username}")
 
     def show_frame(self):
         if not self.is_camera_on:
