@@ -6,20 +6,16 @@ import numpy as np
 
 class PreprocessingPipeline:
     def __init__(self, sharpness_threshold=100, saturation_factor=1.2):
-        # Khởi tạo ngưỡng độ sắc nét và hệ số bão hòa
         self.sharpness_threshold = sharpness_threshold
         self.saturation_factor = saturation_factor
 
     def adjust_brightness_contrast(self, image):
-        # Tách các kênh màu
         b, g, r = cv2.split(image)
 
-        # Áp dụng Histogram Equalization trên mỗi kênh
         b = cv2.equalizeHist(b)
         g = cv2.equalizeHist(g)
         r = cv2.equalizeHist(r)
 
-        # Ghép các kênh lại với nhau
         return cv2.merge([b, g, r])
 
     def check_sharpness(self, image):

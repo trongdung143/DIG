@@ -4,15 +4,14 @@ import shutil
 
 
 class FaceRecognitionPipeline:
-    def __init__(self, max_faces=300, base_dir="./data", username="dung"):
+    def __init__(self, max_faces=300, base_dir="./data/face_data"):
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         self.max_faces = max_faces
         self.face_count = 0
-        self.username = username
+        self.username = input("Nhập tên người dùng cần thu thập: ")
 
-        # Thư mục lưu ảnh: mỗi người 1 folder
         self.save_dir = os.path.join(base_dir, self.username)
         os.makedirs(self.save_dir, exist_ok=True)
         print(f"[INFO] Saving faces to: {self.save_dir}")
@@ -53,7 +52,8 @@ class FaceRecognitionPipeline:
 
             if self.face_count >= self.max_faces:
                 print("[INFO] Collected enough faces. Exiting...")
-                break
+                cap.release()
+                cv2.destroyAllWindows()
 
             cv2.imshow("Face Detection", annotated)
             if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -61,8 +61,3 @@ class FaceRecognitionPipeline:
 
         cap.release()
         cv2.destroyAllWindows()
-
-
-username = input("Nhập tên người dùng cần thu thập: ")
-app = FaceRecognitionPipeline(max_faces=300, username=username)
-app.run()
