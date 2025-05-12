@@ -88,7 +88,7 @@ early_stopping = callbacks.EarlyStopping(
 )
 
 checkpoint = callbacks.ModelCheckpoint(
-    "face_emotion_mobilenetv2.keras",
+    "face_emotion.keras",
     monitor="val_accuracy",
     save_best_only=True,
     mode="max",

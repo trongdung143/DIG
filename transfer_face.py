@@ -28,6 +28,7 @@ class TransferLearning:
             [
                 base_model,
                 layers.GlobalAveragePooling2D(),
+                layers.Dense(32, activation="relu"),
                 layers.Dropout(0.3),
                 layers.Dense(self.num_classes, activation="softmax"),
             ]
@@ -76,9 +77,11 @@ class TransferLearning:
             mode="min",
         )
 
-        model.compile(
-            optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"]
-        )
+        otimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
+
+        loss_fn = tf.keras.losses.CategoricalCrossentropy()
+
+        model.compile(optimizer=otimizer, loss=loss_fn, metrics=["accuracy"])
 
         history = model.fit(
             self.train_generator,
@@ -86,3 +89,11 @@ class TransferLearning:
             validation_data=self.val_generator,
             callbacks=[checkpoint],
         )
+        num_classes = self.num_classes
+
+        with open("num_classes.txt", "w", encoding="utf-8") as file:
+            file.write(str(num_classes))
+
+
+run = TransferLearning()
+run.transfer_learning()
