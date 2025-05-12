@@ -14,4 +14,8 @@ def predict_face(img, threshold, model, class_names):
 
     if confidence < threshold:
         return "Unknown", confidence
+
+    if pred_class < 0 or pred_class >= len(class_names):
+        return "Unknown", confidence
+
     return class_names[pred_class], confidence
