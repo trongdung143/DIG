@@ -1,7 +1,8 @@
-from tensorflow.keras import layers, models, regularizers
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras import callbacks
 import tensorflow as tf
+from tensorflow import keras
+from keras import layers, models, regularizers, callbacks
+from keras._tf_keras.keras.preprocessing.image import ImageDataGenerator
+
 
 data_dir = "./data/emotion_data/train"
 img_size = (48, 48)
