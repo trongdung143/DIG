@@ -711,7 +711,6 @@ class CameraApp:
                 current_time = time.time()
                 face_key = f"{x}_{y}_{w}_{h}"
                 
-                # Kiểm tra xem có trong cache không và còn hiệu lực không
                 if (face_key in self.face_recognition_cache and 
                     current_time - self.last_recognition_time.get(face_key, 0) < self.cache_timeout):
                     label, confidence = self.face_recognition_cache[face_key]
@@ -868,7 +867,7 @@ class CameraApp:
             )
             self.result_frame.place(
                 relx=0.5, rely=0.85, anchor=tk.CENTER
-            )  # Đặt ở phía dưới
+            )
 
             result_label = tk.Label(
                 self.result_frame,
@@ -1041,7 +1040,7 @@ class CameraApp:
             self.camera_label.image = img_tk
 
             self.status_label.config(text=f"Phát hiện {len(faces)} khuôn mặt trong ảnh")
-
+    
     def toggle_camera(self):
         if self.is_camera_on:
             self.is_camera_on = False
@@ -1053,6 +1052,11 @@ class CameraApp:
             self.root.after(100, self.show_init_message)
             self.status_label.config(text="Camera đã tắt")
         else:
+            if self.face_cascade is None:
+                self.face_cascade = cv2.CascadeClassifier(
+                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                )
+            
             self.is_camera_on = True
             self.camera_btn.config(text="Tắt Camera", bg=self.button_positive)
             self.selected_image = None
@@ -1119,6 +1123,24 @@ class CameraApp:
 
         self.root.wait_window(name_dialog)
 
+    def ensure_face_cascade(self):
+        if self.face_cascade is None:
+            self.face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
+            if self.face_cascade.empty():
+                try:
+                    haarcascade_path = cv2.data.haarcascades
+                    self.face_cascade = cv2.CascadeClassifier(
+                        os.path.join(haarcascade_path, "haarcascade_frontalface_default.xml")
+                    )
+                except Exception as e:
+                    print(f"Lỗi khi tải face cascade: {e}")
+                    try:
+                        self.face_cascade = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+                    except:
+                        print("Không thể tải face cascade từ bất kỳ nguồn nào")
+
     def start_face_collection(self):
         if self.is_camera_on:
             if self.cap is not None:
@@ -1126,11 +1148,13 @@ class CameraApp:
                 self.cap = None
             self.camera_label.config(image="")
 
+        self.ensure_face_cascade()
+        
         self.is_collecting = True
         self.face_count = 0
         self.max_faces = 300
-        self.scanning = False
-
+        self.scanning = True
+        
         base_dir = "./data/face_data"
         self.save_dir = os.path.join(base_dir, self.username)
         os.makedirs(self.save_dir, exist_ok=True)
@@ -1163,6 +1187,40 @@ class CameraApp:
         self.cap = cv2.VideoCapture(0)
         self.collect_faces()
 
+    def cancel_collection(self):
+        if self.is_collecting:
+            self.is_collecting = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            
+            if hasattr(self, "cancel_collect_btn") and self.cancel_collect_btn:
+                self.cancel_collect_btn.destroy()
+                
+            self.select_image_btn.config(state=tk.NORMAL)
+            self.camera_btn.config(state=tk.NORMAL)
+            self.face_btn.config(state=tk.NORMAL)
+            
+            self.status_label.config(text=f"Đã hủy thu thập khuôn mặt cho: {self.username}")
+            self.camera_label.config(image="")
+            self.root.after(100, self.show_init_message)
+
+    def finish_collection(self):
+        self.is_collecting = False
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        
+        if hasattr(self, "cancel_collect_btn") and self.cancel_collect_btn:
+            self.cancel_collect_btn.destroy()
+            
+        self.select_image_btn.config(state=tk.NORMAL)
+        self.camera_btn.config(state=tk.NORMAL)
+        self.face_btn.config(state=tk.NORMAL)
+        
+        self.status_label.config(text=f"Đã hoàn tất thu thập khuôn mặt cho: {self.username}")
+        messagebox.showinfo("Hoàn tất", f"Đã thu thập đủ {self.face_count} khuôn mặt cho {self.username}. Hệ thống sẽ đào tạo lại mô hình.")
+
     def collect_frames(self):
         if not self.is_collecting:
             return
@@ -1185,32 +1243,75 @@ class CameraApp:
 
                 frame = cv2.resize(frame, (new_width, new_height))
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame_enhanced = cv2.convertScaleAbs(frame, alpha=1.3, beta=15)
+            
+            gray = cv2.cvtColor(frame_enhanced, cv2.COLOR_BGR2GRAY)
             gray = cv2.equalizeHist(gray)
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            
             faces = self.face_cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+                gray, 
+                scaleFactor=1.05,     
+                minNeighbors=3,       
+                minSize=(20, 20),     
+                flags=cv2.CASCADE_SCALE_IMAGE
             )
+            
+            if len(faces) == 0:
+                faces = self.face_cascade.detectMultiScale(
+                    gray, 
+                    scaleFactor=1.03,
+                    minNeighbors=2,
+                    minSize=(20, 20),
+                    flags=cv2.CASCADE_SCALE_IMAGE
+                )
 
             annotated = frame.copy()
 
-            if self.scanning and len(faces) > 1:
+            if len(faces) > 1:
                 self.status_label.config(
                     text="Quá nhiều khuôn mặt! Vui lòng chỉ hiển thị một khuôn mặt"
                 )
-
-            if not self.scanning and len(faces) == 1:
+                self.scanning = False
+            elif len(faces) == 1:
                 self.scanning = True
-                self.status_label.config(text=f"Bắt đầu quét cho: {self.username}")
-
-            for x, y, w, h in faces:
-                if len(faces) == 1:
-                    face_crop = frame[y : y + h, x : x + w]
+                
+                x, y, w, h = faces[0]
+                
+                padding_x = int(w * 0.15)
+                padding_y = int(h * 0.15)
+                
+                x1 = max(0, x - padding_x)
+                y1 = max(0, y - padding_y)
+                x2 = min(frame.shape[1], x + w + padding_x)
+                y2 = min(frame.shape[0], y + h + padding_y)
+                
+                face_crop = frame_enhanced[y1:y2, x1:x2]
+                
+                face_crop = cv2.convertScaleAbs(face_crop, alpha=1.3, beta=15)
+                
+                try:
+                    lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
+                    l, a, b = cv2.split(lab)
+                    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+                    cl = clahe.apply(l)
+                    enhanced_lab = cv2.merge((cl, a, b))
+                    face_crop = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+                except Exception as e:
+                    print(f"Lỗi khi xử lý ảnh: {e}")
+                
+                if not hasattr(self, 'last_save_time'):
+                    self.last_save_time = 0
+                    
+                current_time = time.time()
+                if current_time - getattr(self, 'last_save_time', 0) > 0.1:
                     filename = os.path.join(
-                        self.save_dir, f"face_{self.face_count + 1}.jpg"
+                        self.save_dir, f"face_{self.face_count + 1}_{int(current_time)}.jpg"
                     )
                     cv2.imwrite(filename, face_crop)
                     self.face_count += 1
-
+                    self.last_save_time = current_time
+                    
                 cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             cv_font = cv2.FONT_HERSHEY_SIMPLEX
@@ -1222,6 +1323,17 @@ class CameraApp:
                 cv_font,
                 0.8,
                 (0, 255, 0),
+                2,
+            )
+
+            frames_per_second = int(self.face_count / 5) if self.face_count > 0 else 0
+            cv2.putText(
+                annotated,
+                f"Toc do: {frames_per_second} frames/giây",
+                (10, 60),
+                cv_font,
+                0.7,
+                (0, 200, 255),
                 2,
             )
 
@@ -1245,14 +1357,13 @@ class CameraApp:
                 self.start_load_model_with_progress()
                 return
 
-        self.root.after(10, self.collect_frames)
+        self.root.after(5, self.collect_frames)
 
     def collect_faces(self):
         if self.is_collecting:
             self.collect_frames()
  
     def get_stable_prediction(self, face_id, label, confidence):
-        
         current_time = time.time()
             
         for old_id in list(self.face_history.keys()):
@@ -1295,19 +1406,19 @@ class CameraApp:
         
         avg_confidence = label_confidences[most_common_label] / count
         
-        min_consistent = 2
-
+        min_consistent = 3
+        
         if count >= min_consistent:
             if most_common_label == "Unknown" and count < 4:
                 return label, confidence
-
+            
             boosted_confidence = min(1.0, avg_confidence + (count / self.history_size) * 0.1)
             
             return most_common_label, boosted_confidence
-
+        
         if confidence > 0.55:
             return label, confidence
-
+        
         return label, confidence
 
     def show_frame(self):
@@ -1338,8 +1449,8 @@ class CameraApp:
             faces = self.face_cascade.detectMultiScale(
                 gray, 
                 scaleFactor=1.05,
-                minNeighbors=4,
-                minSize=(30, 30),
+                minNeighbors=6,
+                minSize=(50, 50),
                 flags=cv2.CASCADE_SCALE_IMAGE
             )
             
@@ -1360,13 +1471,28 @@ class CameraApp:
             else:
                 display_frame = frame_copy
             
+            if len(faces) > 1:
+                faces = sorted(faces, key=lambda face: face[2] * face[3], reverse=True)
+                
+                largest_face = faces[0]
+                small_x, small_y, small_w, small_h = largest_face
+                
+                center_x = frame_small.shape[1] / 2
+                center_y = frame_small.shape[0] / 2
+                face_center_x = small_x + small_w / 2
+                face_center_y = small_y + small_h / 2
+                
+                distance_to_center = ((face_center_x - center_x) ** 2 + (face_center_y - center_y) ** 2) ** 0.5
+                
+                if distance_to_center < frame_small.shape[1] * 0.25 and small_w * small_h > (frame_small.shape[0] * frame_small.shape[1]) * 0.02:
+                    faces = [largest_face]
+            
             if len(faces) > 0:
                 smoothed_faces = []
 
                 if not hasattr(self, 'stable_faces'):
                     self.stable_faces = []
                 
-                # Áp dụng thuật toán lọc IOU để theo dõi khuôn mặt ổn định
                 for (small_x, small_y, small_w, small_h) in faces:
                     x = int(small_x / scaling_factor)
                     y = int(small_y / scaling_factor)
@@ -1382,8 +1508,8 @@ class CameraApp:
                     display_h = int(h * scale_y)
 
                     cv2.rectangle(display_frame, (display_x, display_y), 
-                                 (display_x + display_w, display_y + display_h), 
-                                 (0, 255, 0), 2)
+                                (display_x + display_w, display_y + display_h), 
+                                (0, 255, 0), 2)
 
                     if run_detection:
                         face_region = frame[y:y+h, x:x+w]
@@ -1406,7 +1532,7 @@ class CameraApp:
                                     face_region = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
                                     
                                     label, confidence = predict_face(
-                                        face_region, 0.4, self.model_facerecognition, self.labels
+                                        face_region, 0.5, self.model_facerecognition, self.labels
                                     )
 
                                     if confidence > 0.3:
@@ -1465,12 +1591,20 @@ class CameraApp:
                                     2,
                                 )
                 
-                # Cập nhật thông tin phát hiện
                 self.status_label.config(text=f"Phát hiện {len(faces)} khuôn mặt")
             else:
-                self.status_label.config(text="Không phát hiện khuôn mặt")
+                self.status_label.config(text="Không phát hiện khuôn mặt. Vui lòng nhìn thẳng vào camera.")
+                hint_text = "Di chuyển gần camera hơn"
+                cv2.putText(
+                    display_frame,
+                    hint_text,
+                    (int(display_frame.shape[1]/2 - 150), int(display_frame.shape[0]/2)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (255, 255, 255),
+                    2,
+                )
             
-            # Chuyển đổi và hiển thị frame
             display_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(display_frame)
             img_tk = ImageTk.PhotoImage(image=img)
@@ -1478,7 +1612,6 @@ class CameraApp:
             self.camera_label.config(image=img_tk)
             self.camera_label.image = img_tk
         
-        # Đặt thời gian refresh phù hợp để cân bằng giữa độ trễ và hiệu suất
         self.root.after(25, self.show_frame)
 
 

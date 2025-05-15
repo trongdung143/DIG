@@ -38,7 +38,16 @@ class PreprocessingPipeline:
 
     def align_face(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
+        
+        gray = cv2.equalizeHist(gray)
+        
+        faces = self.face_cascade.detectMultiScale(
+            gray, 
+            scaleFactor=1.05,
+            minNeighbors=3,
+            minSize=(25, 25),
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
         
         if len(faces) == 0:
             return image
@@ -46,7 +55,14 @@ class PreprocessingPipeline:
         x, y, w, h = max(faces, key=lambda rect: rect[2] * rect[3])
         face_gray = gray[y:y+h, x:x+w]
         
-        eyes = self.eye_cascade.detectMultiScale(face_gray)
+        face_gray = cv2.equalizeHist(face_gray)
+        
+        eyes = self.eye_cascade.detectMultiScale(
+            face_gray,
+            scaleFactor=1.05,
+            minNeighbors=3,
+            minSize=(10, 10)
+        )
         
         if len(eyes) >= 2:
             eyes = sorted(eyes, key=lambda e: e[0])
@@ -71,7 +87,8 @@ class PreprocessingPipeline:
                                             flags=cv2.INTER_CUBIC)
                 return aligned_image
         
-        return image
+        enhanced_image = cv2.convertScaleAbs(image, alpha=1.3, beta=10)
+        return enhanced_image
 
     def letterbox_image(self, image, target_size, color):
         ih, iw = image.shape[:2]
