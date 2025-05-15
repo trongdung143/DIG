@@ -12,7 +12,6 @@ import threading
 import time
 from deepface import DeepFace
 
-
 class CameraApp:
     def __init__(self, root):
         self.root = root
@@ -45,6 +44,22 @@ class CameraApp:
         self.face_cascade = None
         self.model_facerecognition = None
         self.model_emotion = None
+
+        # Thêm cache cho nhận diện khuôn mặt
+        self.face_recognition_cache = {}
+        self.cache_timeout = 2.0  # seconds
+        self.last_recognition_time = {}
+        
+        # Thêm cache cho cảm xúc
+        self.emotion_cache = {}
+        self.emotion_cache_time = {}
+
+        # Thêm bộ lọc kết quả nhận diện theo thời gian
+        self.face_history = {}  # Lưu lịch sử nhận diện
+        self.history_size = 5   # Số frame nhớ lại
+        self.min_consistency = 3  # Số frame tối thiểu cần nhất quán
+        self.detection_threshold = 0.4  # Ngưỡng
+        self.same_prediction_boost = 0.1  # Tăng độ tin cậy khi dự đoán giống nhau
 
         self.create_header()
         self.create_main_content()
@@ -94,15 +109,26 @@ class CameraApp:
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-    def detect_emotion_from_frame(self, frame):
+    def detect_emotion_from_frame(self, face_img):
+        current_time = time.time()
+        face_hash = hash(face_img.tobytes())
+        
+        if face_hash in self.emotion_cache and current_time - self.emotion_cache_time.get(face_hash, 0) < 1.0:
+            return self.emotion_cache[face_hash]
+        
         try:
+            small_face = cv2.resize(face_img, (96, 96))
             result = DeepFace.analyze(
-                frame, actions=["emotion"], enforce_detection=False
+                small_face, actions=["emotion"], enforce_detection=False
             )
             emotion = result[0]["dominant_emotion"]
+            
+            self.emotion_cache[face_hash] = emotion
+            self.emotion_cache_time[face_hash] = current_time
+            
             return emotion
         except Exception as e:
-            print("Lỗi phân tích:", e)
+            print("Lỗi phân tích cảm xúc:", e)
             return None
 
     def load_labels(self):
@@ -197,7 +223,7 @@ class CameraApp:
         self.face_btn.pack(side=tk.LEFT, padx=10)
         self.emotion_btn = tk.Button(
             button_frame,
-            text="Nhận diện cảm xúc",
+            text="Emotion",
             command=self.emotion_detection,
             bg=self.accent_color,
             fg=self.text_color,
@@ -210,10 +236,10 @@ class CameraApp:
 
     def emotion_detection(self):
         if self.emotion:
-            self.emotion_btn.config(text="Nhận diện cảm xúc", bg=self.accent_color)
+            self.emotion_btn.config(text="Emotion", bg=self.accent_color)
             self.emotion = False
         else:
-            self.emotion_btn.config(text="Nhận diện cảm xúc", bg=self.button_positive)
+            self.emotion_btn.config(text="Emotion", bg=self.button_positive)
             self.emotion = True
 
     def create_main_content(self):
@@ -425,8 +451,9 @@ class CameraApp:
                     for x, y, w, h in faces:
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         try:
+                            face_region = frame[y:y+h, x:x+w]
                             label, confidence = predict_face(
-                                frame, 0.7, self.model_facerecognition, self.labels
+                                face_region, 0.4, self.model_facerecognition, self.labels
                             )
                             if label is not None:
                                 cv2.putText(
@@ -680,14 +707,42 @@ class CameraApp:
         for x, y, w, h in faces:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             try:
-                label, confidence = predict_face(
-                    frame, 0.7, self.model_facerecognition, self.labels
-                )
+                face_region = frame[y:y+h, x:x+w]
+                current_time = time.time()
+                face_key = f"{x}_{y}_{w}_{h}"
+                
+                # Kiểm tra xem có trong cache không và còn hiệu lực không
+                if (face_key in self.face_recognition_cache and 
+                    current_time - self.last_recognition_time.get(face_key, 0) < self.cache_timeout):
+                    label, confidence = self.face_recognition_cache[face_key]
+                else:
+                    try:
+                        label, confidence = predict_face(
+                            face_region, 0.4, self.model_facerecognition, self.labels
+                        )
+                        self.face_recognition_cache[face_key] = (label, confidence)
+                        self.last_recognition_time[face_key] = current_time
+                    except Exception as e:
+                        label, confidence = "Unknown", 0.0
+                        print(f"Lỗi khi dự đoán khuôn mặt: {str(e)}")
+
+                emotion_text = ""
+                if self.emotion and confidence > 0.4:
+                    emotion = self.detect_emotion_from_frame(face_region)
+                    if emotion:
+                        emotion_text = f": {emotion}"
+
+                face_id = f"{x}_{y}_{w}_{h}"
+
+                label, confidence = self.get_stable_prediction(face_id, label, confidence)
+
                 if label is not None:
+                    text = f"{label} ({confidence:.2f}){emotion_text}"
+                    y_pos = max(y - 10, 20)
                     cv2.putText(
                         frame,
-                        f"{label} ({confidence:.2f}): {self.detect_emotion_from_frame(frame) if self.emotion else None}",
-                        (x, y - 10),
+                        text,
+                        (x, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.8,
                         (36, 255, 12),
@@ -951,14 +1006,15 @@ class CameraApp:
             for x, y, w, h in faces:
                 cv2.rectangle(cv_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 try:
+                    face_region = cv_image[y:y+h, x:x+w]
                     label, confidence = predict_face(
-                        cv_image, 0.7, self.model_facerecognition, self.labels
+                        face_region, 0.4, self.model_facerecognition, self.labels
                     )
 
                     if label is not None:
                         cv2.putText(
                             cv_image,
-                            f"{label} ({confidence:.2f}): {self.detect_emotion_from_frame(cv_image) if self.emotion else None}",
+                            f"{label} ({confidence:.2f}): {self.detect_emotion_from_frame(face_region) if self.emotion else None}",
                             (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.8,
@@ -1107,13 +1163,12 @@ class CameraApp:
         self.cap = cv2.VideoCapture(0)
         self.collect_faces()
 
-    def collect_faces(self):
+    def collect_frames(self):
         if not self.is_collecting:
             return
 
         ret, frame = self.cap.read()
         if ret:
-            # Điều chỉnh kích thước frame theo container
             window_width = self.camera_container.winfo_width()
             window_height = self.camera_container.winfo_height()
 
@@ -1131,6 +1186,7 @@ class CameraApp:
                 frame = cv2.resize(frame, (new_width, new_height))
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
             faces = self.face_cascade.detectMultiScale(
                 gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
             )
@@ -1186,56 +1242,73 @@ class CameraApp:
                 )
                 self.finish_collection()
                 self.load_labels()
-                self.start_load_model_with_progress()  # Gọi dùng chung
+                self.start_load_model_with_progress()
                 return
 
-        self.root.after(10, self.collect_faces)
+        self.root.after(10, self.collect_frames)
 
-    def cancel_collection(self):
-        self.is_collecting = False
+    def collect_faces(self):
+        if self.is_collecting:
+            self.collect_frames()
+ 
+    def get_stable_prediction(self, face_id, label, confidence):
+        
+        current_time = time.time()
+            
+        for old_id in list(self.face_history.keys()):
+            if current_time - self.face_history[old_id]['last_update'] > 10.0:
+                del self.face_history[old_id]
+        
+        if face_id not in self.face_history:
+            self.face_history[face_id] = {
+                'predictions': [(label, confidence)],
+                'last_update': current_time,
+                'stable_label': None,
+                'stable_since': 0
+            }
+            return label, confidence
+        
+        history = self.face_history[face_id]
+        history['last_update'] = current_time
+        
+        history['predictions'].append((label, confidence))
+        
+        self.history_size = 7
+        
+        if len(history['predictions']) > self.history_size:
+            history['predictions'].pop(0)
+        
+        label_counts = {}
+        label_confidences = {}
+        
+        for pred_label, pred_conf in history['predictions']:
+            if pred_label not in label_counts:
+                label_counts[pred_label] = 0
+                label_confidences[pred_label] = 0
+            label_counts[pred_label] += 1
+            label_confidences[pred_label] += pred_conf
+        
+        if not label_counts:
+            return label, confidence
+        
+        most_common_label, count = max(label_counts.items(), key=lambda x: x[1])
+        
+        avg_confidence = label_confidences[most_common_label] / count
+        
+        min_consistent = 2
 
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+        if count >= min_consistent:
+            if most_common_label == "Unknown" and count < 4:
+                return label, confidence
 
-        if hasattr(self, "cancel_collect_btn") and self.cancel_collect_btn is not None:
-            self.cancel_collect_btn.destroy()
-            self.cancel_collect_btn = None
+            boosted_confidence = min(1.0, avg_confidence + (count / self.history_size) * 0.1)
+            
+            return most_common_label, boosted_confidence
 
-        self.select_image_btn.config(state=tk.NORMAL)
-        self.camera_btn.config(state=tk.NORMAL)
-        self.face_btn.config(state=tk.NORMAL)
+        if confidence > 0.55:
+            return label, confidence
 
-        self.camera_label.config(image="")
-        self.root.after(100, self.show_init_message)
-        self.status_label.config(text="Đã dừng thu thập khuôn mặt")
-
-    def finish_collection(self):
-        self.is_collecting = False
-
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-
-        if hasattr(self, "cancel_collect_btn") and self.cancel_collect_btn is not None:
-            self.cancel_collect_btn.destroy()
-            self.cancel_collect_btn = None
-
-        self.select_image_btn.config(state=tk.NORMAL)
-        self.camera_btn.config(state=tk.NORMAL)
-        self.face_btn.config(state=tk.NORMAL)
-
-        messagebox.showinfo(
-            "Hoàn tất",
-            f"Đã thu thập thành công {self.face_count} ảnh cho {self.username}.\n"
-            "Dữ liệu đã được lưu vào thư mục dữ liệu.",
-        )
-
-        self.camera_label.config(image="")
-        self.root.after(100, self.show_init_message)
-        self.status_label.config(
-            text=f"Thu thập khuôn mặt hoàn tất cho {self.username}"
-        )
+        return label, confidence
 
     def show_frame(self):
         if not self.is_camera_on:
@@ -1243,66 +1316,170 @@ class CameraApp:
 
         ret, frame = self.cap.read()
         if ret:
+            self.cap.grab()
+
+            frame_copy = frame.copy()
+            frame_height, frame_width = frame_copy.shape[:2]
+
+            scaling_factor = 0.5
+            frame_small = cv2.resize(frame_copy, (0, 0), fx=scaling_factor, fy=scaling_factor)
+
+            gray = cv2.cvtColor(frame_small, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
+
+            gray = cv2.bilateralFilter(gray, 5, 21, 21)
+
+            if not hasattr(self, 'frame_count'):
+                self.frame_count = 0
+            self.frame_count += 1
+
+            run_detection = self.frame_count % 3 == 0
+            
+            faces = self.face_cascade.detectMultiScale(
+                gray, 
+                scaleFactor=1.05,
+                minNeighbors=4,
+                minSize=(30, 30),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
             window_width = self.camera_container.winfo_width()
             window_height = self.camera_container.winfo_height()
-
+            
             if window_width > 1 and window_height > 1:
-                height, width = frame.shape[:2]
-                aspect_ratio = width / height
-
+                aspect_ratio = frame_width / frame_height
+                
                 if window_width / window_height > aspect_ratio:
                     new_width = int(window_height * aspect_ratio)
                     new_height = window_height
                 else:
                     new_width = window_width
                     new_height = int(new_width / aspect_ratio)
+                
+                display_frame = cv2.resize(frame_copy, (new_width, new_height))
+            else:
+                display_frame = frame_copy
+            
+            if len(faces) > 0:
+                smoothed_faces = []
 
-                frame = cv2.resize(frame, (new_width, new_height))
+                if not hasattr(self, 'stable_faces'):
+                    self.stable_faces = []
+                
+                # Áp dụng thuật toán lọc IOU để theo dõi khuôn mặt ổn định
+                for (small_x, small_y, small_w, small_h) in faces:
+                    x = int(small_x / scaling_factor)
+                    y = int(small_y / scaling_factor)
+                    w = int(small_w / scaling_factor)
+                    h = int(small_h / scaling_factor)
+                    
+                    scale_x = new_width / frame_width
+                    scale_y = new_height / frame_height
+                    
+                    display_x = int(x * scale_x)
+                    display_y = int(y * scale_y)
+                    display_w = int(w * scale_x)
+                    display_h = int(h * scale_y)
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
-            )
+                    cv2.rectangle(display_frame, (display_x, display_y), 
+                                 (display_x + display_w, display_y + display_h), 
+                                 (0, 255, 0), 2)
 
-        for x, y, w, h in faces:
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            try:
-                label, confidence = predict_face(
-                    frame, 0.7, self.model_facerecognition, self.labels
-                )
+                    if run_detection:
+                        face_region = frame[y:y+h, x:x+w]
+                        if face_region.size > 0:
+                            try:
+                                current_time = time.time()
+                                face_key = f"{x}_{y}_{w}_{h}"
 
-                if label is not None:
-                    cv2.putText(
-                        frame,
-                        f"{label} ({confidence:.2f}) :{self.detect_emotion_from_frame(frame) if self.emotion else None}",
-                        (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (36, 255, 12),
-                        2,
-                    )
-            except Exception as e:
-                cv2.putText(
-                    frame,
-                    "Unknown",
-                    (x, y - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 0, 255),
-                    2,
-                )
-                print(f"Lỗi khi dự đoán khuôn mặt: {str(e)}")
+                                if (face_key in self.face_recognition_cache and 
+                                    current_time - self.last_recognition_time.get(face_key, 0) < 1.5):
+                                    label, confidence = self.face_recognition_cache[face_key]
+                                else:
+                                    face_region = cv2.convertScaleAbs(face_region, alpha=1.3, beta=10)
+                                    
+                                    lab = cv2.cvtColor(face_region, cv2.COLOR_BGR2LAB)
+                                    l, a, b = cv2.split(lab)
+                                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                                    cl = clahe.apply(l)
+                                    enhanced_lab = cv2.merge((cl, a, b))
+                                    face_region = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+                                    
+                                    label, confidence = predict_face(
+                                        face_region, 0.4, self.model_facerecognition, self.labels
+                                    )
 
-            self.status_label.config(text=f"Phát hiện {len(faces)} khuôn mặt")
+                                    if confidence > 0.3:
+                                        self.face_recognition_cache[face_key] = (label, confidence)
+                                        self.last_recognition_time[face_key] = current_time
 
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame)
+                                face_id = f"{x}_{y}_{w}_{h}"
+                                label, confidence = self.get_stable_prediction(face_id, label, confidence)
+
+                                emotion_text = ""
+                                if self.emotion and confidence > 0.4:
+                                    emotion = self.detect_emotion_from_frame(face_region)
+                                    if emotion:
+                                        emotion_text = f": {emotion}"
+                                
+                                if label is not None:
+                                    text = f"{label} ({confidence:.2f}){emotion_text}"
+                                    y_pos = max(display_y - 10, 20)
+                                    cv2.putText(
+                                        display_frame,
+                                        text,
+                                        (display_x, y_pos),
+                                        cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.7,
+                                        (36, 255, 12),
+                                        2,
+                                    )
+                            except Exception as e:
+                                print(f"Lỗi phân tích khuôn mặt: {e}")
+                                cv2.putText(
+                                    display_frame,
+                                    "Unknown",
+                                    (display_x, display_y - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8,
+                                    (0, 0, 255),
+                                    2,
+                                )
+                    else:
+                        face_id = f"{x}_{y}_{w}_{h}"
+                        if face_id in self.face_history:
+                            history = self.face_history[face_id]
+                            if history['predictions']:
+                                last_pred = history['predictions'][-1]
+                                label, confidence = last_pred
+
+                                text = f"{label} ({confidence:.2f})"
+                                y_pos = max(display_y - 10, 20)
+                                cv2.putText(
+                                    display_frame,
+                                    text,
+                                    (display_x, y_pos),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7,
+                                    (36, 255, 12),
+                                    2,
+                                )
+                
+                # Cập nhật thông tin phát hiện
+                self.status_label.config(text=f"Phát hiện {len(faces)} khuôn mặt")
+            else:
+                self.status_label.config(text="Không phát hiện khuôn mặt")
+            
+            # Chuyển đổi và hiển thị frame
+            display_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(display_frame)
             img_tk = ImageTk.PhotoImage(image=img)
-
+            
             self.camera_label.config(image=img_tk)
             self.camera_label.image = img_tk
-
-        self.root.after(10, self.show_frame)
+        
+        # Đặt thời gian refresh phù hợp để cân bằng giữa độ trễ và hiệu suất
+        self.root.after(25, self.show_frame)
 
 
 def main():
